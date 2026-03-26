@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-@dataclass
+@dataclass(frozen=True)
 class ModelPricing:
     input_per_m: float        # USD per million input tokens
     cache_read_per_m: float   # USD per million cache-read tokens
