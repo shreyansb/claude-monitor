@@ -35,7 +35,7 @@ def _fmt_value(v: float, label: str) -> str:
 
 def _build_layout(store: DataStore, show_pricing: bool) -> Group:
     buckets = store.buckets()
-    totals = store.session_totals()
+    totals = store.lifetime_totals()
 
     items = [
         Text("◆ Claude Monitor", style="bold cyan"),
@@ -82,8 +82,14 @@ class Display:
     def _keyboard_thread(self) -> None:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
+        new = termios.tcgetattr(fd)
+        # Disable canonical mode and echo only — leave output processing (OPOST)
+        # intact so \n still translates to \r\n and output stays left-aligned.
+        new[3] = new[3] & ~(termios.ICANON | termios.ECHO)
+        new[6][termios.VMIN] = 1
+        new[6][termios.VTIME] = 0
         try:
-            tty.setraw(fd)
+            termios.tcsetattr(fd, termios.TCSANOW, new)
             while not self._quit.is_set():
                 ch = sys.stdin.read(1)
                 if ch in ("q", "Q", "\x03"):  # q or Ctrl+C

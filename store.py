@@ -70,6 +70,7 @@ class DataStore:
         self._buckets: dict[int, tuple[int, Bucket]] = {}
         # Maps slot_index → (epoch_slot, Bucket)
         # epoch_slot = epoch_seconds // BUCKET_SECONDS (absolute, not modular)
+        self._lifetime = Totals()  # accumulated since app start, never evicted
         self._lock = threading.Lock()
 
     def add(self, event: UsageEvent) -> None:
@@ -91,6 +92,11 @@ class DataStore:
                 bucket = existing[1]
 
             bucket.add(event)
+            self._lifetime.input_tokens += event.input_tokens
+            self._lifetime.cache_creation_tokens += event.cache_creation_tokens
+            self._lifetime.cache_read_tokens += event.cache_read_tokens
+            self._lifetime.output_tokens += event.output_tokens
+            self._lifetime.cost_cents += event.cost_cents
 
     def buckets(self) -> list[Bucket]:
         """Return 30 buckets oldest→newest. Empty Bucket for gaps."""
@@ -106,6 +112,17 @@ class DataStore:
                 else:
                     result.append(Bucket())
         return result
+
+    def lifetime_totals(self) -> Totals:
+        """Cumulative totals since app start (never evicted)."""
+        with self._lock:
+            return Totals(
+                input_tokens=self._lifetime.input_tokens,
+                cache_creation_tokens=self._lifetime.cache_creation_tokens,
+                cache_read_tokens=self._lifetime.cache_read_tokens,
+                output_tokens=self._lifetime.output_tokens,
+                cost_cents=self._lifetime.cost_cents,
+            )
 
     def session_totals(self) -> Totals:
         buckets = self.buckets()
