@@ -3,7 +3,7 @@ import threading
 import tty
 import termios
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
@@ -33,43 +33,27 @@ def _fmt_value(v: float, label: str) -> str:
     return f"{int(v):,}"
 
 
-def _build_layout(store: DataStore, show_pricing: bool) -> Table:
+def _build_layout(store: DataStore, show_pricing: bool) -> Group:
     buckets = store.buckets()
     totals = store.session_totals()
 
-    root = Table.grid(padding=0, expand=False)
-    root.add_column()
-
-    title = Text("◆ Claude Monitor", style="bold cyan")
-    root.add_row(title)
-
-    tokens_chart = _render_bar_chart(
-        buckets,
-        lambda b: b.total_tokens,
-        "Tokens / 10s",
-        "cyan",
-    )
-    root.add_row(tokens_chart)
-
-    cents_chart = _render_bar_chart(
-        buckets,
-        lambda b: b.cost_cents,
-        "Cents / 10s",
-        "green",
-    )
-    root.add_row(cents_chart)
+    items = [
+        Text("◆ Claude Monitor", style="bold cyan"),
+        _render_bar_chart(buckets, lambda b: b.total_tokens, "Tokens / 10s", "cyan"),
+        _render_bar_chart(buckets, lambda b: b.cost_cents, "Cents / 10s", "green"),
+    ]
 
     status = Text()
-    status.append(f"Session: ", style="dim")
+    status.append("Session: ", style="dim")
     status.append(f"{totals.total_tokens:,} tokens", style="bold")
     status.append("  |  ", style="dim")
     status.append(f"${totals.cost_cents / 100:.4f}", style="bold green")
     status.append("  |  ", style="dim")
     status.append("[p] pricing  [q] quit", style="dim")
-    root.add_row(status)
+    items.append(status)
 
     if show_pricing:
-        pt = Table(title="Pricing (USD per million tokens)", box=box.SIMPLE, show_header=True)
+        pt = Table(title="Pricing (USD per million tokens)", box=box.SIMPLE, show_header=True, expand=False)
         pt.add_column("Model", style="cyan")
         pt.add_column("Input", justify="right")
         pt.add_column("Cache Read", justify="right")
@@ -83,9 +67,9 @@ def _build_layout(store: DataStore, show_pricing: bool) -> Table:
                 f"${p.cache_write_per_m:.2f}",
                 f"${p.output_per_m:.2f}",
             )
-        root.add_row(pt)
+        items.append(pt)
 
-    return root
+    return Group(*items)
 
 
 class Display:
@@ -116,7 +100,6 @@ class Display:
         with Live(
             console=self._console,
             auto_refresh=False,
-            vertical_overflow="visible",
         ) as live:
             kb = threading.Thread(target=self._keyboard_thread, daemon=True)
             kb.start()
