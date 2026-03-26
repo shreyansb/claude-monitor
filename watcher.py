@@ -1,5 +1,4 @@
 import json
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
