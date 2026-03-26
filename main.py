@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 
 from store import DataStore
 from watcher import LogWatcher, CLAUDE_PROJECTS_DIR
@@ -14,13 +13,8 @@ def main() -> None:
         sys.exit(1)
 
     store = DataStore()
-
     watcher = LogWatcher(store, projects_dir=projects_dir)
-    try:
-        watcher.start()
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    watcher.start()
 
     try:
         display = Display(store)
