@@ -14,7 +14,11 @@ def main() -> None:
 
     store = DataStore()
     watcher = LogWatcher(store, projects_dir=projects_dir)
-    watcher.start()
+    try:
+        watcher.start()
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         display = Display(store)

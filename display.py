@@ -91,7 +91,7 @@ def _build_layout(store: DataStore, show_pricing: bool) -> Table:
 class Display:
     def __init__(self, store: DataStore) -> None:
         self._store = store
-        self._show_pricing = False
+        self._pricing_event = threading.Event()
         self._quit = threading.Event()
         self._console = Console()
 
@@ -105,18 +105,21 @@ class Display:
                 if ch in ("q", "Q", "\x03"):  # q or Ctrl+C
                     self._quit.set()
                 elif ch in ("p", "P"):
-                    self._show_pricing = not self._show_pricing
+                    if self._pricing_event.is_set():
+                        self._pricing_event.clear()
+                    else:
+                        self._pricing_event.set()
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     def run(self) -> None:
         with Live(
-            _build_layout(self._store, self._show_pricing),
+            _build_layout(self._store, self._pricing_event.is_set()),
             console=self._console,
             refresh_per_second=1,
         ) as live:
             kb = threading.Thread(target=self._keyboard_thread, daemon=True)
             kb.start()
             while not self._quit.is_set():
-                live.update(_build_layout(self._store, self._show_pricing))
+                live.update(_build_layout(self._store, self._pricing_event.is_set()))
                 self._quit.wait(timeout=1.0)
