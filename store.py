@@ -1,6 +1,6 @@
 import threading
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 BUCKET_SECONDS = 10
 NUM_BUCKETS = 30  # 30 × 10s = 5 minutes
@@ -60,15 +60,8 @@ class Totals:
         )
 
 
-def _bucket_index(ts: datetime) -> int:
-    """Map a timestamp to a bucket slot (0–29) based on 10s intervals."""
-    epoch_seconds = int(ts.timestamp())
-    return (epoch_seconds // BUCKET_SECONDS) % NUM_BUCKETS
-
-
 def _window_start() -> datetime:
     """Oldest timestamp still within the 5-minute window."""
-    from datetime import timedelta
     return datetime.now(timezone.utc) - timedelta(seconds=BUCKET_SECONDS * NUM_BUCKETS)
 
 
@@ -84,9 +77,8 @@ class DataStore:
         epoch_slot = epoch_seconds // BUCKET_SECONDS
         slot_index = epoch_slot % NUM_BUCKETS
 
-        cutoff_slot = int(_window_start().timestamp()) // BUCKET_SECONDS
-
         with self._lock:
+            cutoff_slot = int(_window_start().timestamp()) // BUCKET_SECONDS
             if epoch_slot < cutoff_slot:
                 return  # too old, discard
 

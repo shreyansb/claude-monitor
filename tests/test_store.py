@@ -33,7 +33,7 @@ def test_event_lands_in_correct_bucket():
     now = _now()
     store.add(_event(now, cost_cents=1.0))
     buckets = store.buckets()
-    # Most recent bucket should contain the event
+    # Allow for bucket boundary race: event may land in bucket[-1] or[-2]
     assert buckets[-1].cost_cents > 0 or buckets[-2].cost_cents > 0
 
 def test_old_events_discarded():
