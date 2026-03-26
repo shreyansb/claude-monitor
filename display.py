@@ -37,7 +37,7 @@ def _build_layout(store: DataStore, show_pricing: bool) -> Table:
     buckets = store.buckets()
     totals = store.session_totals()
 
-    root = Table.grid(padding=1)
+    root = Table.grid(padding=0, expand=False)
     root.add_column()
 
     title = Text("◆ Claude Monitor", style="bold cyan")
@@ -114,12 +114,15 @@ class Display:
 
     def run(self) -> None:
         with Live(
-            _build_layout(self._store, self._pricing_event.is_set()),
             console=self._console,
-            refresh_per_second=1,
+            auto_refresh=False,
+            vertical_overflow="visible",
         ) as live:
             kb = threading.Thread(target=self._keyboard_thread, daemon=True)
             kb.start()
             while not self._quit.is_set():
-                live.update(_build_layout(self._store, self._pricing_event.is_set()))
+                live.update(
+                    _build_layout(self._store, self._pricing_event.is_set()),
+                    refresh=True,
+                )
                 self._quit.wait(timeout=1.0)
