@@ -51,36 +51,55 @@ def test_parse_missing_timestamp_returns_none():
     })
     assert parse_jsonl_line(line) is None
 
-def test_watcher_reads_existing_file_on_start():
+def _fresh_line(input_tokens=100, output_tokens=75):
+    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return json.dumps({
+        "type": "assistant",
+        "timestamp": now_ts,
+        "message": {
+            "model": "claude-sonnet-4-6",
+            "role": "assistant",
+            "usage": {
+                "input_tokens": input_tokens,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": output_tokens,
+            }
+        }
+    })
+
+def test_watcher_ignores_existing_content_on_start():
+    """Content written before start() should not be counted."""
     store = DataStore()
     with tempfile.TemporaryDirectory() as tmpdir:
         projects_dir = Path(tmpdir)
-        proj_dir = projects_dir / "test-project"
-        proj_dir.mkdir()
-        jsonl_file = proj_dir / "session.jsonl"
-        # Use current timestamp so the event falls within the 5-minute rolling window
-        now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        fresh_line = json.dumps({
-            "type": "assistant",
-            "timestamp": now_ts,
-            "message": {
-                "model": "claude-sonnet-4-6",
-                "role": "assistant",
-                "usage": {
-                    "input_tokens": 100,
-                    "cache_creation_input_tokens": 50,
-                    "cache_read_input_tokens": 200,
-                    "output_tokens": 75,
-                }
-            }
-        })
-        jsonl_file.write_text(fresh_line + "\n")
+        (projects_dir / "test-project").mkdir()
+        jsonl_file = projects_dir / "test-project" / "session.jsonl"
+        jsonl_file.write_text(_fresh_line(input_tokens=999) + "\n")
 
         watcher = LogWatcher(store, projects_dir=projects_dir)
         watcher.start()
+        time.sleep(0.3)
+        watcher.stop()
+
+        assert store.lifetime_totals().input_tokens == 0
+
+def test_watcher_picks_up_new_writes_after_start():
+    """Content appended after start() should be counted."""
+    store = DataStore()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        projects_dir = Path(tmpdir)
+        (projects_dir / "test-project").mkdir()
+        jsonl_file = projects_dir / "test-project" / "session.jsonl"
+        jsonl_file.write_text("")  # pre-existing empty file
+
+        watcher = LogWatcher(store, projects_dir=projects_dir)
+        watcher.start()
+        with open(jsonl_file, "a") as f:
+            f.write(_fresh_line(input_tokens=100, output_tokens=75) + "\n")
         time.sleep(0.5)
         watcher.stop()
 
-        totals = store.session_totals()
+        totals = store.lifetime_totals()
         assert totals.input_tokens == 100
         assert totals.output_tokens == 75

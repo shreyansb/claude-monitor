@@ -92,9 +92,13 @@ class LogWatcher:
                 f"Claude projects directory not found: {self._projects_dir}"
             )
         handler = _Handler(self._store, self._offsets)
-        # Seed existing files first (so startup shows recent history)
+        # Record current end-of-file for all existing files so the counter
+        # only includes usage that occurs after the app starts.
         for jsonl in self._projects_dir.rglob("*.jsonl"):
-            handler._read_new_lines(jsonl)
+            try:
+                self._offsets[str(jsonl.resolve())] = jsonl.stat().st_size
+            except OSError:
+                pass
 
         self._observer.schedule(handler, str(self._projects_dir), recursive=True)
         self._observer.start()
