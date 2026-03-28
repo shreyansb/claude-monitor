@@ -112,26 +112,52 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
 def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int) -> list[Text]:
     content: list[Text] = []
 
+    visible_dirs = dirs[:max(0, height - 1)]
+    col_w = 6  # fixed width for each number column
+
+    # Pre-compute values
+    rows: list[tuple[str, int, int]] = []
     total_5m = 0
     total_lifetime = 0
-    if dirs:
-        for d in dirs[:height]:
-            tokens_5m = sum(b.by_dir.get(d, 0) for b in buckets)
-            tokens_lifetime = lifetime_by_dir.get(d, 0)
-            total_5m += tokens_5m
-            total_lifetime += tokens_lifetime
+    for d in visible_dirs:
+        t5 = sum(b.by_dir.get(d, 0) for b in buckets)
+        tl = lifetime_by_dir.get(d, 0)
+        total_5m += t5
+        total_lifetime += tl
+        rows.append((d, t5, tl))
 
+    # Column widths: name column = longest visible dir name (min 4)
+    name_w = max((len(d) for d in visible_dirs), default=4)
+
+    if rows:
+        # Header: "■ " prefix + name column + two number columns
+        header = Text()
+        header.append("   " + " " * name_w + " ")  # "■ " prefix + name
+        header.append(f"{'5m':>{col_w}}", style="dim")
+        header.append("  ")
+        header.append(f"{'session':>{col_w}}", style="dim")
+        content.append(header)
+
+        for d, t5, tl in rows:
             line = Text()
             line.append("■ ", style=dir_colors[d])
-            line.append(f"{d}   {_fmt_val(tokens_5m)} / {_fmt_val(tokens_lifetime)}")
+            line.append(f"{d:<{name_w}} ")
+            line.append(f"{_fmt_val(t5):>{col_w}}")
+            line.append("  ")
+            line.append(f"{_fmt_val(tl):>{col_w}}")
             content.append(line)
 
     # Separator line
-    sep_width = 20
+    sep_width = 3 + name_w + 1 + col_w + 2 + col_w
     content.append(Text("─" * sep_width, style="dim"))
 
-    # Total line
-    content.append(Text(f"  Total   {_fmt_val(total_5m)} / {_fmt_val(total_lifetime)}"))
+    # Total line — aligned with directory rows
+    total_line = Text()
+    total_line.append(f"{'Total':<{2 + name_w + 1}}", style="bold")
+    total_line.append(f"{_fmt_val(total_5m):>{col_w}}")
+    total_line.append("  ")
+    total_line.append(f"{_fmt_val(total_lifetime):>{col_w}}")
+    content.append(total_line)
 
     # height + 2 total lines; pad with blank Text("") at the top
     total_slots = height + 2
