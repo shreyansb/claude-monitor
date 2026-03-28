@@ -103,7 +103,7 @@ def test_watcher_ignores_existing_content_on_start():
 
         # Verify no events were loaded from pre-existing files
         by_dir = store.lifetime_by_dir()
-        total_input_tokens = sum(store.buckets()[i].input_tokens for i in range(len(store.buckets())))
+        total_input_tokens = sum(b.input_tokens for b in store.buckets())
         assert total_input_tokens == 0
         assert len(by_dir) == 0
 
