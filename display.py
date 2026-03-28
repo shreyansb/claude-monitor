@@ -106,7 +106,7 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
     total_5m = 0
     total_lifetime = 0
     if dirs:
-        for d in dirs:
+        for d in dirs[:height]:
             tokens_5m = sum(b.by_dir.get(d, 0) for b in buckets)
             tokens_lifetime = lifetime_by_dir.get(d, 0)
             total_5m += tokens_5m
