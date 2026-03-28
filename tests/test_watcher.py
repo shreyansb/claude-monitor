@@ -101,7 +101,11 @@ def test_watcher_ignores_existing_content_on_start():
         time.sleep(0.3)
         watcher.stop()
 
-        assert store.lifetime_totals().input_tokens == 0
+        # Verify no events were loaded from pre-existing files
+        by_dir = store.lifetime_by_dir()
+        total_input_tokens = sum(store.buckets()[i].input_tokens for i in range(len(store.buckets())))
+        assert total_input_tokens == 0
+        assert len(by_dir) == 0
 
 def test_watcher_picks_up_new_writes_after_start():
     """Content appended after start() should be counted."""
@@ -119,6 +123,9 @@ def test_watcher_picks_up_new_writes_after_start():
         time.sleep(0.5)
         watcher.stop()
 
-        totals = store.lifetime_totals()
-        assert totals.input_tokens == 100
-        assert totals.output_tokens == 75
+        # Verify events written after start are properly counted
+        buckets = store.buckets()
+        total_input_tokens = sum(b.input_tokens for b in buckets)
+        total_output_tokens = sum(b.output_tokens for b in buckets)
+        assert total_input_tokens == 100
+        assert total_output_tokens == 75

@@ -1,7 +1,7 @@
 import sys
 
 from store import DataStore
-from watcher import LogWatcher, CLAUDE_PROJECTS_DIR
+from watcher import LogWatcher, preload_recent, CLAUDE_PROJECTS_DIR
 from display import Display
 
 
@@ -13,6 +13,7 @@ def main() -> None:
         sys.exit(1)
 
     store = DataStore()
+    preload_recent(store, projects_dir)
     watcher = LogWatcher(store, projects_dir=projects_dir)
     try:
         watcher.start()

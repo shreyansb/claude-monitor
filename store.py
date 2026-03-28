@@ -132,28 +132,6 @@ class DataStore:
                     result.append(Bucket())
         return result
 
-    def lifetime_totals(self) -> Totals:
-        """Cumulative totals since app start (never evicted)."""
-        with self._lock:
-            return Totals(
-                input_tokens=self._lifetime.input_tokens,
-                cache_creation_tokens=self._lifetime.cache_creation_tokens,
-                cache_read_tokens=self._lifetime.cache_read_tokens,
-                output_tokens=self._lifetime.output_tokens,
-                cost_cents=self._lifetime.cost_cents,
-            )
-
-    def session_totals(self) -> Totals:
-        buckets = self.buckets()
-        t = Totals()
-        for b in buckets:
-            t.input_tokens += b.input_tokens
-            t.cache_creation_tokens += b.cache_creation_tokens
-            t.cache_read_tokens += b.cache_read_tokens
-            t.output_tokens += b.output_tokens
-            t.cost_cents += b.cost_cents
-        return t
-
     def directories(self) -> list[str]:
         """Return directories in first-seen order."""
         with self._lock:
