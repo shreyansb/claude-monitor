@@ -66,15 +66,24 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
 
                 # Find first segment whose top exceeds row
                 char_appended = False
-                for seg_top, d in seg_tops:
+                for i, (seg_top, d) in enumerate(seg_tops):
                     if seg_top > row:
                         color = dir_colors[d]
                         if seg_top >= row + 1:
                             line.append("█", style=color)
                         else:
-                            # partial block
+                            # partial block — find the next segment above this boundary
                             idx = max(1, int((seg_top - row) * 8))
-                            line.append(BLOCKS[idx], style=color)
+                            # find the next segment with actual tokens above this boundary
+                            upper_color = None
+                            for j in range(i + 1, len(seg_tops)):
+                                if seg_tops[j][0] > seg_tops[i][0]:
+                                    upper_color = dir_colors[seg_tops[j][1]]
+                                    break
+                            if upper_color:
+                                line.append(BLOCKS[idx], style=f"{color} on {upper_color}")
+                            else:
+                                line.append(BLOCKS[idx], style=color)
                         char_appended = True
                         break
                 if not char_appended:
