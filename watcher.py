@@ -12,6 +12,8 @@ CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
 def _dir_name(path: Path) -> str:
+    # Best-effort: hyphens in original directory names are indistinguishable
+    # from the path-separator encoding, so the label may truncate long names.
     encoded = path.parent.name  # e.g. '-Users-shreyans-Code-puck-claude-monitor'
     home_prefix = str(Path.home()).replace('/', '-')  # '-Users-shreyans'
     if encoded.startswith(home_prefix):
@@ -89,9 +91,9 @@ class _Handler(FileSystemEventHandler):
             line = raw.strip()
             if not line:
                 continue
-            event = parse_jsonl_line(line, directory)
-            if event:
-                self._store.add(event)
+            usage_event = parse_jsonl_line(line, directory)
+            if usage_event:
+                self._store.add(usage_event)
 
 
 def preload_recent(store: DataStore, projects_dir: Path, window_seconds: int = 60) -> None:

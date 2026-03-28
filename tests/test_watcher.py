@@ -3,7 +3,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from watcher import parse_jsonl_line, LogWatcher
+from watcher import parse_jsonl_line, _dir_name, LogWatcher
 from store import DataStore
 
 VALID_ASSISTANT_LINE = json.dumps({
@@ -67,6 +67,25 @@ def _fresh_line(input_tokens=100, output_tokens=75):
             }
         }
     })
+
+def test_dir_name_under_home():
+    home = str(Path.home()).replace('/', '-')
+    encoded_dir = f"{home}-Code-puck-myapp"
+    fake_path = Path(f"/doesnt-matter/{encoded_dir}/session.jsonl")
+    assert _dir_name(fake_path) == "puck-myapp"
+
+
+def test_dir_name_not_under_home():
+    fake_path = Path("/doesnt-matter/-some-other-root-project-name/session.jsonl")
+    result = _dir_name(fake_path)
+    assert result == "project-name"
+
+
+def test_parse_jsonl_line_propagates_directory():
+    event = parse_jsonl_line(VALID_ASSISTANT_LINE, "puck-myapp")
+    assert event is not None
+    assert event.directory == "puck-myapp"
+
 
 def test_watcher_ignores_existing_content_on_start():
     """Content written before start() should not be counted."""
