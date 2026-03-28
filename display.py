@@ -16,7 +16,7 @@ PALETTE = ["cyan", "yellow", "green", "magenta", "blue", "red", "bright_cyan", "
 
 def _fmt_val(v: int) -> str:
     if v >= 1_000_000:
-        return f"{v // 1_000_000}M"
+        return f"{v / 1_000_000:.2f}M"
     if v >= 1_000:
         return f"{v // 1_000}k"
     return str(v)
@@ -204,9 +204,10 @@ class Display:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         new = termios.tcgetattr(fd)
-        # Disable canonical mode and echo only — leave output processing (OPOST)
-        # intact so \n still translates to \r\n and output stays left-aligned.
-        new[3] = new[3] & ~(termios.ICANON | termios.ECHO)
+        # Disable canonical mode, echo, and signal generation (ISIG) so Ctrl+C
+        # sends \x03 to stdin rather than raising SIGINT.  Leave output
+        # processing (OPOST) intact so \n still translates to \r\n.
+        new[3] = new[3] & ~(termios.ICANON | termios.ECHO | termios.ISIG)
         new[6][termios.VMIN] = 1
         new[6][termios.VTIME] = 0
         try:
@@ -225,12 +226,25 @@ class Display:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     def run(self) -> None:
-        with Live(
-            console=self._console,
-            auto_refresh=False,
-        ) as live:
-            kb = threading.Thread(target=self._keyboard_thread, daemon=True)
-            kb.start()
-            while not self._quit.is_set():
-                live.update(_build_layout(self._store), refresh=True)
-                self._quit.wait(timeout=1.0)
+        fd = sys.stdin.fileno()
+        old_attrs = termios.tcgetattr(fd)
+        try:
+            with Live(
+                console=self._console,
+                auto_refresh=False,
+            ) as live:
+                kb = threading.Thread(target=self._keyboard_thread, daemon=True)
+                kb.start()
+                try:
+                    while not self._quit.is_set():
+                        live.update(_build_layout(self._store), refresh=True)
+                        self._quit.wait(timeout=1.0)
+                except KeyboardInterrupt:
+                    self._quit.set()
+        finally:
+            # Safety net: restore terminal even if the keyboard thread's finally
+            # didn't run (e.g. killed by an external SIGINT).
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+            except termios.error:
+                pass
