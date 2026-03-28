@@ -30,8 +30,8 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
 
     lines: list[Text] = []
 
-    # Index 0: label line, padded to gutter + NUM_BUCKETS width
-    lines.append(Text(f"{label:<{gutter + NUM_BUCKETS}}", style="bold"))
+    # Index 0: label line, padded to gutter + n width
+    lines.append(Text(f"{label:<{gutter + n}}", style="bold"))
 
     # Indices 1 to height: data rows (row height-1 down to 0, top to bottom)
     for row in range(height - 1, -1, -1):
@@ -90,7 +90,7 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
     for i, c in enumerate("-5m"):
         axis_chars[i] = c
     for i, c in enumerate("-1m"):
-        if 0 < one_min_pos + i < n:
+        if 3 <= one_min_pos + i < n - 3:
             axis_chars[one_min_pos + i] = c
     for i, c in enumerate("now"):
         axis_chars[n - len("now") + i] = c
@@ -103,9 +103,9 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
 def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int) -> list[Text]:
     content: list[Text] = []
 
+    total_5m = 0
+    total_lifetime = 0
     if dirs:
-        total_5m = 0
-        total_lifetime = 0
         for d in dirs:
             tokens_5m = sum(b.by_dir.get(d, 0) for b in buckets)
             tokens_lifetime = lifetime_by_dir.get(d, 0)
@@ -116,9 +116,6 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
             line.append("■ ", style=dir_colors[d])
             line.append(f"{d}   {_fmt_val(tokens_5m)} / {_fmt_val(tokens_lifetime)}")
             content.append(line)
-    else:
-        total_5m = 0
-        total_lifetime = 0
 
     # Separator line
     sep_width = 20
