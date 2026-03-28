@@ -1,85 +1,174 @@
 import sys
 import threading
-import tty
 import termios
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.table import Table
 from rich.text import Text
-from rich import box
 
-from pricing import PRICING_TABLE
-from store import DataStore, Bucket
+from store import DataStore, Bucket, BUCKET_SECONDS, NUM_BUCKETS
 
-BARS = " ▁▂▃▄▅▆▇█"
+_chart_height = 5
+_chart_height_lock = threading.Lock()
+BLOCKS = " ▁▂▃▄▅▆▇█"
+PALETTE = ["cyan", "yellow", "green", "magenta", "blue", "red", "bright_cyan", "bright_yellow"]
 
 
-def _render_bar_chart(buckets: list[Bucket], value_fn, label: str, color: str) -> Text:
-    values = [value_fn(b) for b in buckets]
+def _fmt_val(v: int) -> str:
+    if v >= 1_000_000:
+        return f"{v // 1_000_000}M"
+    if v >= 1_000:
+        return f"{v // 1_000}k"
+    return str(v)
+
+
+def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_colors: dict[str, str], height: int) -> list[Text]:
+    values = [b.total_tokens for b in buckets]
     max_val = max(values) if any(v > 0 for v in values) else 1
-    text = Text()
-    text.append(f"{label}\n", style="bold")
-    for v in values:
-        level = min(int(v / max_val * (len(BARS) - 1)), len(BARS) - 1)
-        text.append(BARS[level], style=color)
-    text.append(f"  max={_fmt_value(max_val, label)}\n")
-    return text
+    n = len(values)
+    gutter = 5
+
+    lines: list[Text] = []
+
+    # Index 0: label line, padded to gutter + NUM_BUCKETS width
+    lines.append(Text(f"{label:<{gutter + NUM_BUCKETS}}", style="bold"))
+
+    # Indices 1 to height: data rows (row height-1 down to 0, top to bottom)
+    for row in range(height - 1, -1, -1):
+        line = Text()
+        if row == height - 1:
+            line.append(f"{_fmt_val(max_val):>{gutter}}", style="dim")
+        elif row == 0:
+            line.append(f"{'0':>{gutter}}", style="dim")
+        else:
+            line.append(" " * gutter)
+
+        if not dirs:
+            # Fallback: single-color rendering using "cyan"
+            for v in values:
+                bar_height = v / max_val * height
+                if bar_height >= row + 1:
+                    line.append("█", style="cyan")
+                elif bar_height > row:
+                    frac = bar_height - row
+                    idx = max(1, int(frac * 8))
+                    line.append(BLOCKS[idx], style="cyan")
+                else:
+                    line.append(" ")
+        else:
+            for b in buckets:
+                # Precompute cumulative heights from bottom for this column
+                cum = 0.0
+                seg_tops: list[tuple[float, str]] = []
+                for d in dirs:
+                    cum += b.by_dir.get(d, 0) / max_val * height
+                    seg_tops.append((cum, d))
+
+                # Find first segment whose top exceeds row
+                char_appended = False
+                for seg_top, d in seg_tops:
+                    if seg_top > row:
+                        color = dir_colors[d]
+                        if seg_top >= row + 1:
+                            line.append("█", style=color)
+                        else:
+                            # partial block
+                            idx = max(1, int((seg_top - row) * 8))
+                            line.append(BLOCKS[idx], style=color)
+                        char_appended = True
+                        break
+                if not char_appended:
+                    line.append(" ")
+
+        lines.append(line)
+
+    # Index height+1: x-axis line
+    one_min_buckets = 60 // BUCKET_SECONDS  # 6 buckets = 1 minute
+    one_min_pos = n - one_min_buckets       # column of the "-1m" marker
+
+    axis_chars = list(" " * n)
+    for i, c in enumerate("-5m"):
+        axis_chars[i] = c
+    for i, c in enumerate("-1m"):
+        if 0 < one_min_pos + i < n:
+            axis_chars[one_min_pos + i] = c
+    for i, c in enumerate("now"):
+        axis_chars[n - len("now") + i] = c
+
+    lines.append(Text(" " * gutter + "".join(axis_chars), style="dim"))
+
+    return lines
 
 
-def _fmt_value(v: float, label: str) -> str:
-    if "Cent" in label:
-        return f"{v:.3f}¢"
-    return f"{int(v):,}"
+def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int) -> list[Text]:
+    content: list[Text] = []
+
+    if dirs:
+        total_5m = 0
+        total_lifetime = 0
+        for d in dirs:
+            tokens_5m = sum(b.by_dir.get(d, 0) for b in buckets)
+            tokens_lifetime = lifetime_by_dir.get(d, 0)
+            total_5m += tokens_5m
+            total_lifetime += tokens_lifetime
+
+            line = Text()
+            line.append("■ ", style=dir_colors[d])
+            line.append(f"{d}   {_fmt_val(tokens_5m)} / {_fmt_val(tokens_lifetime)}")
+            content.append(line)
+    else:
+        total_5m = 0
+        total_lifetime = 0
+
+    # Separator line
+    sep_width = 20
+    content.append(Text("─" * sep_width, style="dim"))
+
+    # Total line
+    content.append(Text(f"  Total   {_fmt_val(total_5m)} / {_fmt_val(total_lifetime)}"))
+
+    # height + 2 total lines; pad with blank Text("") at the top
+    total_slots = height + 2
+    pad_count = total_slots - len(content)
+    result: list[Text] = [Text("") for _ in range(max(0, pad_count))]
+    result.extend(content)
+    return result
 
 
-def _build_layout(store: DataStore, show_pricing: bool) -> Group:
+def _build_layout(store: DataStore) -> Group:
     buckets = store.buckets()
-    totals = store.lifetime_totals()
 
-    items = [
-        Text("◆ Claude Monitor", style="bold cyan"),
-        _render_bar_chart(buckets, lambda b: b.total_tokens, "Tokens / 10s", "cyan"),
-        _render_bar_chart(buckets, lambda b: b.cost_cents, "Cents / 10s", "green"),
-    ]
+    with _chart_height_lock:
+        height = _chart_height
+
+    dirs = store.directories()
+    dir_colors = {d: PALETTE[i % len(PALETTE)] for i, d in enumerate(dirs)}
+
+    chart_lines = _render_area_chart(buckets, "Tokens / 10s", dirs, dir_colors, height)
+    legend_lines = _build_legend(dirs, dir_colors, buckets, store.lifetime_by_dir(), height)
+
+    merged = Text()
+    for chart_line, legend_line in zip(chart_lines, legend_lines):
+        merged.append_text(chart_line)
+        merged.append("  ")
+        merged.append_text(legend_line)
+        merged.append("\n")
 
     status = Text()
-    status.append("Session: ", style="dim")
-    status.append(f"{totals.total_tokens:,} tokens", style="bold")
-    status.append("  |  ", style="dim")
-    status.append(f"${totals.cost_cents / 100:.4f}", style="bold green")
-    status.append("  |  ", style="dim")
-    status.append("[p] pricing  [q] quit", style="dim")
-    items.append(status)
+    status.append("[q] quit", style="dim")
+    status.append("  [+/-] chart height", style="dim")
 
-    if show_pricing:
-        pt = Table(title="Pricing (USD per million tokens)", box=box.SIMPLE, show_header=True, expand=False)
-        pt.add_column("Model", style="cyan")
-        pt.add_column("Input", justify="right")
-        pt.add_column("Cache Read", justify="right")
-        pt.add_column("Cache Write", justify="right")
-        pt.add_column("Output", justify="right")
-        for model, p in PRICING_TABLE.items():
-            pt.add_row(
-                model,
-                f"${p.input_per_m:.2f}",
-                f"${p.cache_read_per_m:.2f}",
-                f"${p.cache_write_per_m:.2f}",
-                f"${p.output_per_m:.2f}",
-            )
-        items.append(pt)
-
-    return Group(*items)
+    return Group(Text("◆ Claude Monitor", style="bold cyan"), merged, status)
 
 
 class Display:
     def __init__(self, store: DataStore) -> None:
         self._store = store
-        self._pricing_event = threading.Event()
         self._quit = threading.Event()
         self._console = Console()
 
     def _keyboard_thread(self) -> None:
+        global _chart_height
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         new = termios.tcgetattr(fd)
@@ -94,11 +183,12 @@ class Display:
                 ch = sys.stdin.read(1)
                 if ch in ("q", "Q", "\x03"):  # q or Ctrl+C
                     self._quit.set()
-                elif ch in ("p", "P"):
-                    if self._pricing_event.is_set():
-                        self._pricing_event.clear()
-                    else:
-                        self._pricing_event.set()
+                elif ch == "+":
+                    with _chart_height_lock:
+                        _chart_height = min(_chart_height + 1, 30)
+                elif ch == "-":
+                    with _chart_height_lock:
+                        _chart_height = max(_chart_height - 1, 1)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -110,8 +200,5 @@ class Display:
             kb = threading.Thread(target=self._keyboard_thread, daemon=True)
             kb.start()
             while not self._quit.is_set():
-                live.update(
-                    _build_layout(self._store, self._pricing_event.is_set()),
-                    refresh=True,
-                )
+                live.update(_build_layout(self._store), refresh=True)
                 self._quit.wait(timeout=1.0)
