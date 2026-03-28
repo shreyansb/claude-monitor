@@ -15,6 +15,7 @@ class UsageEvent:
     cache_read_tokens: int
     output_tokens: int
     cost_cents: float
+    directory: str = ""
 
 
 @dataclass

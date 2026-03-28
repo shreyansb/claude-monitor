@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
@@ -11,7 +11,20 @@ from store import DataStore, UsageEvent
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
-def parse_jsonl_line(line: str) -> UsageEvent | None:
+def _dir_name(path: Path) -> str:
+    encoded = path.parent.name  # e.g. '-Users-shreyans-Code-puck-claude-monitor'
+    home_prefix = str(Path.home()).replace('/', '-')  # '-Users-shreyans'
+    if encoded.startswith(home_prefix):
+        relative = encoded[len(home_prefix):].lstrip('-')  # 'Code-puck-claude-monitor'
+    else:
+        relative = encoded.lstrip('-')
+    parts = [p for p in relative.split('-') if p]
+    if not parts:
+        return encoded
+    return '-'.join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+
+
+def parse_jsonl_line(line: str, directory: str = "") -> UsageEvent | None:
     """Parse one JSONL line. Returns UsageEvent or None if not a usage entry."""
     try:
         data = json.loads(line)
@@ -46,6 +59,7 @@ def parse_jsonl_line(line: str) -> UsageEvent | None:
         cache_read_tokens=usage.get("cache_read_input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
         cost_cents=cost,
+        directory=directory,
     )
 
 
@@ -70,13 +84,32 @@ class _Handler(FileSystemEventHandler):
         except (OSError, PermissionError):
             return
 
+        directory = _dir_name(path)
         for raw in new_data.decode("utf-8", errors="replace").splitlines():
             line = raw.strip()
             if not line:
                 continue
-            event = parse_jsonl_line(line)
+            event = parse_jsonl_line(line, directory)
             if event:
                 self._store.add(event)
+
+
+def preload_recent(store: DataStore, projects_dir: Path, window_seconds: int = 60) -> None:
+    """Read the last `window_seconds` of events from existing JSONL files into the store."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+    for jsonl in projects_dir.rglob("*.jsonl"):
+        try:
+            text = jsonl.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        directory = _dir_name(jsonl)
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            event = parse_jsonl_line(line, directory)
+            if event and event.timestamp >= cutoff:
+                store.add(event)
 
 
 class LogWatcher:
