@@ -160,6 +160,6 @@ class DataStore:
             return list(self._dir_order)
 
     def lifetime_by_dir(self) -> dict[str, int]:
-        """Session totals per directory since app start."""
+        """Lifetime totals per directory since app start."""
         with self._lock:
             return dict(self._lifetime_by_dir)
