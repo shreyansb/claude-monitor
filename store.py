@@ -1,5 +1,5 @@
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 BUCKET_SECONDS = 10
@@ -17,6 +17,15 @@ class UsageEvent:
     cost_cents: float
     directory: str = ""
 
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.cache_creation_tokens
+            + self.cache_read_tokens
+            + self.output_tokens
+        )
+
 
 @dataclass
 class Bucket:
@@ -25,6 +34,7 @@ class Bucket:
     cache_read_tokens: int = 0
     output_tokens: int = 0
     cost_cents: float = 0.0
+    by_dir: dict[str, int] = field(default_factory=dict)
 
     def add(self, event: UsageEvent) -> None:
         self.input_tokens += event.input_tokens
@@ -32,6 +42,7 @@ class Bucket:
         self.cache_read_tokens += event.cache_read_tokens
         self.output_tokens += event.output_tokens
         self.cost_cents += event.cost_cents
+        self.by_dir[event.directory] = self.by_dir.get(event.directory, 0) + event.total_tokens
 
     @property
     def total_tokens(self) -> int:
@@ -73,6 +84,8 @@ class DataStore:
         # epoch_slot = epoch_seconds // BUCKET_SECONDS (absolute, not modular)
         self._lifetime = Totals()  # accumulated since app start, never evicted
         self._lock = threading.Lock()
+        self._lifetime_by_dir: dict[str, int] = {}
+        self._dir_order: list[str] = []
 
     def add(self, event: UsageEvent) -> None:
         epoch_seconds = int(event.timestamp.timestamp())
@@ -98,6 +111,11 @@ class DataStore:
             self._lifetime.cache_read_tokens += event.cache_read_tokens
             self._lifetime.output_tokens += event.output_tokens
             self._lifetime.cost_cents += event.cost_cents
+            if event.directory not in self._lifetime_by_dir:
+                self._dir_order.append(event.directory)
+            self._lifetime_by_dir[event.directory] = (
+                self._lifetime_by_dir.get(event.directory, 0) + event.total_tokens
+            )
 
     def buckets(self) -> list[Bucket]:
         """Return 30 buckets oldest→newest. Empty Bucket for gaps."""
@@ -135,3 +153,13 @@ class DataStore:
             t.output_tokens += b.output_tokens
             t.cost_cents += b.cost_cents
         return t
+
+    def directories(self) -> list[str]:
+        """Return directories in first-seen order."""
+        with self._lock:
+            return list(self._dir_order)
+
+    def lifetime_by_dir(self) -> dict[str, int]:
+        """Session totals per directory since app start."""
+        with self._lock:
+            return dict(self._lifetime_by_dir)
