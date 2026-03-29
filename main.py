@@ -3,6 +3,7 @@ import sys
 from store import DataStore
 from watcher import LogWatcher, preload_recent, CLAUDE_PROJECTS_DIR
 from display import Display
+from anthropic_usage import AnthropicUsage
 
 
 def main() -> None:
@@ -21,11 +22,15 @@ def main() -> None:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    usage = AnthropicUsage()
+    usage.start()
+
     try:
-        display = Display(store)
+        display = Display(store, usage=usage)
         display.run()
     finally:
         watcher.stop()
+        usage.stop()
 
 
 if __name__ == "__main__":
