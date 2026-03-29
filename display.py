@@ -228,7 +228,7 @@ def _build_layout(store: DataStore, usage=None) -> Group:
     status.append("[q] quit", style="dim")
     status.append("  [+/-] chart height", style="dim")
     if input_active:
-        status.append("  [a] cancel", style="dim")
+        status.append("  [Esc] cancel  [Enter] save", style="dim")
         status.append("  Anthropic ▎" + "*" * len(input_buf))
     else:
         status.append("  [a] key", style="dim")
@@ -266,7 +266,7 @@ class Display:
                     # Input mode: q/Q are regular chars; only Ctrl+C force-quits
                     if ch == "\x03":
                         self._quit.set()
-                    elif ch == "a":  # [a] closes and saves
+                    elif ch in ("\r", "\n"):  # Enter — save and close
                         with _api_input_lock:
                             buf = _api_input_buffer
                             _api_input_active = False
