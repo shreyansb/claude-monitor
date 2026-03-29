@@ -10,6 +10,9 @@ from store import DataStore, Bucket, BUCKET_SECONDS, NUM_BUCKETS
 
 _chart_height = 5
 _chart_height_lock = threading.Lock()
+_api_input_active = False
+_api_input_buffer = ""
+_api_input_lock = threading.Lock()
 BLOCKS = " ▁▂▃▄▅▆▇█"
 PALETTE = ["cyan", "yellow", "green", "magenta", "blue", "red", "bright_cyan", "bright_yellow"]
 
@@ -20,6 +23,14 @@ def _fmt_val(v: int) -> str:
     if v >= 1_000:
         return f"{v // 1_000}k"
     return str(v)
+
+
+def _fmt_cost(cents: float) -> str:
+    if cents < 1:
+        return "$0.00"
+    if cents < 100_000:
+        return f"${cents / 100:.2f}"
+    return f"${cents / 100_000:.2f}k"
 
 
 def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_colors: dict[str, str], height: int) -> list[Text]:
@@ -92,8 +103,7 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
         lines.append(line)
 
     # Index height+1: x-axis line
-    one_min_buckets = 60 // BUCKET_SECONDS  # 6 buckets = 1 minute
-    one_min_pos = n - one_min_buckets       # column of the "-1m" marker
+    one_min_pos = n - int(n * 0.2)  # 20% from the right = 1 minute ago in a 5-minute window
 
     axis_chars = list(" " * n)
     for i, c in enumerate("-5m"):
@@ -101,15 +111,13 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
     for i, c in enumerate("-1m"):
         if 3 <= one_min_pos + i < n - 3:
             axis_chars[one_min_pos + i] = c
-    for i, c in enumerate("now"):
-        axis_chars[n - len("now") + i] = c
 
     lines.append(Text(" " * gutter + "".join(axis_chars), style="dim"))
 
     return lines
 
 
-def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int) -> list[Text]:
+def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int, api_month_cents: float = 0.0, api_delta_cents: float = 0.0) -> list[Text]:
     content: list[Text] = []
 
     visible_dirs = dirs[:max(0, height - 1)]
@@ -159,25 +167,43 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
     total_line.append(f"{_fmt_val(total_lifetime):>{col_w}}")
     content.append(total_line)
 
+    # Optional Anthropic API cost row
+    show_api = api_month_cents >= 1
+    if show_api:
+        delta_col_w = 7  # one wider to fit '+' prefix
+        api_line = Text()
+        api_line.append(f"{'  Anthropic':<{2 + name_w + 1}}", style="dim")
+        api_line.append(f"{_fmt_cost(api_month_cents):>{col_w}}", style="dim")
+        api_line.append("  ")
+        api_line.append(f"{'+' + _fmt_cost(api_delta_cents):>{delta_col_w}}", style="dim")
+        content.append(api_line)
+
     # height + 2 total lines; pad with blank Text("") at the top
-    total_slots = height + 2
+    total_slots = height + 2 + (1 if show_api else 0)
     pad_count = total_slots - len(content)
     result: list[Text] = [Text("") for _ in range(max(0, pad_count))]
     result.extend(content)
     return result
 
 
-def _build_layout(store: DataStore) -> Group:
+def _build_layout(store: DataStore, usage=None) -> Group:
     buckets = store.buckets()
 
     with _chart_height_lock:
         height = _chart_height
 
+    # Snapshot API cost once to keep chart/legend line counts in sync
+    api_month_cents = usage.cost_month_cents if usage is not None else 0.0
+    api_delta_cents = usage.cost_session_delta_cents if usage is not None else 0.0
+
     dirs = store.directories()
     dir_colors = {d: PALETTE[i % len(PALETTE)] for i, d in enumerate(dirs)}
 
     chart_lines = _render_area_chart(buckets, "Tokens / 10s", dirs, dir_colors, height)
-    legend_lines = _build_legend(dirs, dir_colors, buckets, store.lifetime_by_dir(), height)
+    # Add a blank chart line when the legend has an extra Anthropic row
+    if api_month_cents >= 1:
+        chart_lines.append(Text(""))
+    legend_lines = _build_legend(dirs, dir_colors, buckets, store.lifetime_by_dir(), height, api_month_cents, api_delta_cents)
 
     merged = Text()
     for chart_line, legend_line in zip(chart_lines, legend_lines):
@@ -186,9 +212,18 @@ def _build_layout(store: DataStore) -> Group:
         merged.append_text(legend_line)
         merged.append("\n")
 
+    with _api_input_lock:
+        input_active = _api_input_active
+        input_buf = _api_input_buffer
+
     status = Text()
     status.append("[q] quit", style="dim")
     status.append("  [+/-] chart height", style="dim")
+    if input_active:
+        status.append("  [a] cancel", style="dim")
+        status.append("  ▎" + "*" * len(input_buf))
+    else:
+        status.append("  [a] Anthropic key", style="dim")
 
     return Group(Text("◆ Claude Monitor", style="bold cyan"), merged, status)
 

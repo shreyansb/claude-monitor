@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from anthropic_usage import AnthropicUsage
+from display import _fmt_cost
 
 
 def test_no_key_returns_zero(tmp_path):
@@ -53,3 +54,12 @@ def test_fetch_error_retains_last_known(tmp_path):
         usage._fetch_once()
     # Last-known value retained
     assert usage.cost_month_cents == 500.0
+
+
+def test_fmt_cost_ranges():
+    assert _fmt_cost(0.5) == "$0.00"     # sub-cent — not shown in practice
+    assert _fmt_cost(1.0) == "$0.01"     # exactly 1 cent
+    assert _fmt_cost(123_45) == "$123.45"  # mid-range dollar value (12345 cents)
+    assert _fmt_cost(99_999) == "$999.99"  # just below k threshold
+    assert _fmt_cost(100_000) == "$1.00k"  # exactly at k threshold ($1,000)
+    assert _fmt_cost(123_000) == "$1.23k"  # above threshold ($1,230)
