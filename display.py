@@ -256,51 +256,71 @@ class Display:
         new[6][termios.VTIME] = 0
         try:
             termios.tcsetattr(fd, termios.TCSANOW, new)
-            # Disable bracketed paste mode (Rich enables it); without this,
-            # Cmd-V sends \x1b[200~<content>\x1b[201~ and the \x1b cancels input.
-            os.write(sys.stdout.fileno(), b"\x1b[?2004l")
             while not self._quit.is_set():
                 ch = os.read(fd, 1).decode("utf-8", errors="replace")
-                if ch in ("q", "Q", "\x03"):  # q or Ctrl+C
-                    self._quit.set()
-                elif ch == "+":
-                    with _chart_height_lock:
-                        _chart_height = min(_chart_height + 1, 30)
-                elif ch == "-":
-                    with _chart_height_lock:
-                        _chart_height = max(_chart_height - 1, 1)
-                elif ch == "a":
-                    with _api_input_lock:
-                        if _api_input_active:
+
+                with _api_input_lock:
+                    in_input = _api_input_active
+
+                if in_input:
+                    # Input mode: q/Q are regular chars; only Ctrl+C force-quits
+                    if ch == "\x03":
+                        self._quit.set()
+                    elif ch == "a":  # [a] closes and saves
+                        with _api_input_lock:
                             buf = _api_input_buffer
                             _api_input_active = False
                             _api_input_buffer = ""
+                        if buf and self._usage is not None:
+                            self._usage.set_key(buf)
+                    elif ch == "\x1b":  # ESC or bracketed paste start
+                        # Read available bytes to determine sequence type
+                        new[6][termios.VMIN] = 0
+                        new[6][termios.VTIME] = 1  # 100ms timeout
+                        termios.tcsetattr(fd, termios.TCSANOW, new)
+                        seq = b""
+                        while True:
+                            chunk = os.read(fd, 128)
+                            if not chunk:
+                                break
+                            seq += chunk
+                            if b"\x1b[201~" in seq:
+                                break
+                        new[6][termios.VMIN] = 1
+                        new[6][termios.VTIME] = 0
+                        termios.tcsetattr(fd, termios.TCSANOW, new)
+
+                        if seq.startswith(b"[200~") and b"\x1b[201~" in seq:
+                            # Bracketed paste — extract printable content
+                            raw = seq[5:seq.index(b"\x1b[201~")].decode("utf-8", errors="replace")
+                            paste = "".join(c for c in raw if "\x20" <= c <= "\x7e")
+                            with _api_input_lock:
+                                _api_input_buffer += paste
                         else:
-                            buf = None
+                            # Plain ESC or other escape sequence — cancel input
+                            with _api_input_lock:
+                                _api_input_active = False
+                                _api_input_buffer = ""
+                    elif ch in ("\x7f", "\x08"):  # backspace / DEL
+                        with _api_input_lock:
+                            _api_input_buffer = _api_input_buffer[:-1]
+                    elif "\x20" <= ch <= "\x7e":  # printable ASCII
+                        with _api_input_lock:
+                            _api_input_buffer += ch
+                else:
+                    # Normal mode
+                    if ch in ("q", "Q", "\x03"):
+                        self._quit.set()
+                    elif ch == "+":
+                        with _chart_height_lock:
+                            _chart_height = min(_chart_height + 1, 30)
+                    elif ch == "-":
+                        with _chart_height_lock:
+                            _chart_height = max(_chart_height - 1, 1)
+                    elif ch == "a":
+                        with _api_input_lock:
                             _api_input_active = True
                             _api_input_buffer = ""
-                    if buf and self._usage is not None:
-                        self._usage.set_key(buf)
-                elif ch == "\x1b":  # ESC — cancel input, drain sequence
-                    with _api_input_lock:
-                        _api_input_active = False
-                        _api_input_buffer = ""
-                    # Drain multi-byte ESC sequence (e.g. arrow keys or bracketed paste)
-                    new[6][termios.VMIN] = 0
-                    new[6][termios.VTIME] = 1  # 100ms timeout
-                    termios.tcsetattr(fd, termios.TCSANOW, new)
-                    while os.read(fd, 1):
-                        pass
-                    new[6][termios.VMIN] = 1
-                    new[6][termios.VTIME] = 0
-                    termios.tcsetattr(fd, termios.TCSANOW, new)
-                else:
-                    with _api_input_lock:
-                        if _api_input_active:
-                            if ch in ("\x7f", "\x08"):  # backspace / DEL
-                                _api_input_buffer = _api_input_buffer[:-1]
-                            elif "\x20" <= ch <= "\x7e":  # printable ASCII
-                                _api_input_buffer += ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
