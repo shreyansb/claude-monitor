@@ -1,3 +1,4 @@
+import os
 import sys
 import threading
 import termios
@@ -255,8 +256,11 @@ class Display:
         new[6][termios.VTIME] = 0
         try:
             termios.tcsetattr(fd, termios.TCSANOW, new)
+            # Disable bracketed paste mode (Rich enables it); without this,
+            # Cmd-V sends \x1b[200~<content>\x1b[201~ and the \x1b cancels input.
+            os.write(sys.stdout.fileno(), b"\x1b[?2004l")
             while not self._quit.is_set():
-                ch = sys.stdin.read(1)
+                ch = os.read(fd, 1).decode("utf-8", errors="replace")
                 if ch in ("q", "Q", "\x03"):  # q or Ctrl+C
                     self._quit.set()
                 elif ch == "+":
@@ -281,14 +285,12 @@ class Display:
                     with _api_input_lock:
                         _api_input_active = False
                         _api_input_buffer = ""
-                    # Drain multi-byte ESC sequence (e.g. arrow keys send \x1b[A)
+                    # Drain multi-byte ESC sequence (e.g. arrow keys or bracketed paste)
                     new[6][termios.VMIN] = 0
                     new[6][termios.VTIME] = 1  # 100ms timeout
                     termios.tcsetattr(fd, termios.TCSANOW, new)
-                    while True:
-                        leftover = sys.stdin.read(1)
-                        if not leftover:
-                            break
+                    while os.read(fd, 1):
+                        pass
                     new[6][termios.VMIN] = 1
                     new[6][termios.VTIME] = 0
                     termios.tcsetattr(fd, termios.TCSANOW, new)
