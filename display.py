@@ -121,7 +121,7 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
     return lines
 
 
-def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int, api_month_cents: float = 0.0, api_delta_cents: float = 0.0) -> list[Text]:
+def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int, api_month_cents: float = 0.0, api_delta_cents: float = 0.0, show_api: bool = False) -> list[Text]:
     content: list[Text] = []
 
     visible_dirs = dirs[:max(0, height - 1)]
@@ -172,7 +172,6 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
     content.append(total_line)
 
     # Optional Anthropic API cost row
-    show_api = api_month_cents >= 1
     if show_api:
         # Widen columns to fit '$100.00' (7 chars) in month and '+$100.00' (8 chars) in delta
         api_col_w = max(col_w, 7)
@@ -203,15 +202,16 @@ def _build_layout(store: DataStore, usage=None) -> Group:
     # Snapshot API cost once to keep chart/legend line counts in sync
     api_month_cents = usage.cost_month_cents if usage is not None else 0.0
     api_delta_cents = usage.cost_session_delta_cents if usage is not None else 0.0
+    show_api = usage is not None and usage.has_key
 
     dirs = store.directories()
     dir_colors = {d: PALETTE[i % len(PALETTE)] for i, d in enumerate(dirs)}
 
     chart_lines = _render_area_chart(buckets, "Tokens / 10s", dirs, dir_colors, height)
     # Add a blank chart line when the legend has an extra Anthropic row
-    if api_month_cents >= 1:
+    if show_api:
         chart_lines.append(Text(""))
-    legend_lines = _build_legend(dirs, dir_colors, buckets, store.lifetime_by_dir(), height, api_month_cents, api_delta_cents)
+    legend_lines = _build_legend(dirs, dir_colors, buckets, store.lifetime_by_dir(), height, api_month_cents, api_delta_cents, show_api)
 
     merged = Text()
     for chart_line, legend_line in zip(chart_lines, legend_lines):
@@ -232,6 +232,8 @@ def _build_layout(store: DataStore, usage=None) -> Group:
         status.append("  Anthropic ▎" + "*" * len(input_buf))
     else:
         status.append("  [a] key", style="dim")
+        if usage is not None and usage.has_key:
+            status.append(" ✓", style="green")
 
     return Group(Text("◆ Claude Monitor", style="bold cyan"), merged, status)
 
