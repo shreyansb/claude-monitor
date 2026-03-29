@@ -29,10 +29,13 @@ class AnthropicUsage:
         return self._key_path.exists() and bool(self._key_path.read_text().strip())
 
     def set_key(self, key: str) -> None:
-        with self._lock:
-            self._key_path.write_text(key)
-            self._key_path.chmod(0o600)
-            self._session_start_cents = None
+        try:
+            with self._lock:
+                self._key_path.write_text(key)
+                self._key_path.chmod(0o600)
+                self._session_start_cents = None
+        except OSError:
+            pass
         self.trigger_fetch()
 
     def trigger_fetch(self) -> None:
@@ -48,6 +51,9 @@ class AnthropicUsage:
 
     def _poll_loop(self) -> None:
         while not self._shutdown.is_set():
-            self._fetch_once()
+            try:
+                self._fetch_once()
+            except Exception:
+                pass
             self._fetch_event.clear()
             self._fetch_event.wait(timeout=60)
