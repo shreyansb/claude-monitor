@@ -228,9 +228,9 @@ def _build_layout(store: DataStore, usage=None) -> Group:
     status.append("  [+/-] chart height", style="dim")
     if input_active:
         status.append("  [a] cancel", style="dim")
-        status.append("  ▎" + "*" * len(input_buf))
+        status.append("  Anthropic ▎" + "*" * len(input_buf))
     else:
-        status.append("  [a] Anthropic key", style="dim")
+        status.append("  [a] key", style="dim")
 
     return Group(Text("◆ Claude Monitor", style="bold cyan"), merged, status)
 
