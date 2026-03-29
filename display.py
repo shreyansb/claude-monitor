@@ -103,7 +103,8 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
         lines.append(line)
 
     # Index height+1: x-axis line
-    one_min_pos = n - int(n * 0.2)  # 20% from the right = 1 minute ago in a 5-minute window
+    one_min_buckets = 60 // BUCKET_SECONDS  # 6 buckets = 1 minute
+    one_min_pos = n - one_min_buckets       # column of the "-1m" marker
 
     axis_chars = list(" " * n)
     for i, c in enumerate("-5m"):
@@ -111,6 +112,8 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
     for i, c in enumerate("-1m"):
         if 3 <= one_min_pos + i < n - 3:
             axis_chars[one_min_pos + i] = c
+    for i, c in enumerate("now"):
+        axis_chars[n - len("now") + i] = c
 
     lines.append(Text(" " * gutter + "".join(axis_chars), style="dim"))
 
@@ -170,10 +173,14 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
     # Optional Anthropic API cost row
     show_api = api_month_cents >= 1
     if show_api:
-        delta_col_w = 7  # one wider to fit '+' prefix
+        # Widen columns to fit '$100.00' (7 chars) in month and '+$100.00' (8 chars) in delta
+        api_col_w = max(col_w, 7)
+        delta_col_w = api_col_w + 1  # one wider to fit '+' prefix
+        # Ensure name column is wide enough for 'Anthropic' label
+        api_name_w = max(name_w, len("Anthropic"))
         api_line = Text()
-        api_line.append(f"{'  Anthropic':<{2 + name_w + 1}}", style="dim")
-        api_line.append(f"{_fmt_cost(api_month_cents):>{col_w}}", style="dim")
+        api_line.append(f"{'  Anthropic':<{2 + api_name_w + 1}}", style="dim")
+        api_line.append(f"{_fmt_cost(api_month_cents):>{api_col_w}}", style="dim")
         api_line.append("  ")
         api_line.append(f"{'+' + _fmt_cost(api_delta_cents):>{delta_col_w}}", style="dim")
         content.append(api_line)

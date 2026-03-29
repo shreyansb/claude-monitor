@@ -91,7 +91,7 @@ class AnthropicUsage:
                     except (KeyError, ValueError):
                         pass
 
-            if body.get("has_more"):
+            if body.get("has_more") and body.get("next_page"):
                 next_page = body.get("next_page")
             else:
                 break
