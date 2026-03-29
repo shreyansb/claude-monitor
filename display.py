@@ -229,13 +229,14 @@ def _build_layout(store: DataStore, usage=None) -> Group:
 
 
 class Display:
-    def __init__(self, store: DataStore) -> None:
+    def __init__(self, store: DataStore, usage=None) -> None:
         self._store = store
+        self._usage = usage
         self._quit = threading.Event()
         self._console = Console()
 
     def _keyboard_thread(self) -> None:
-        global _chart_height
+        global _chart_height, _api_input_active, _api_input_buffer
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         new = termios.tcgetattr(fd)
@@ -257,6 +258,40 @@ class Display:
                 elif ch == "-":
                     with _chart_height_lock:
                         _chart_height = max(_chart_height - 1, 1)
+                elif ch == "a":
+                    with _api_input_lock:
+                        if _api_input_active:
+                            buf = _api_input_buffer
+                            _api_input_active = False
+                            _api_input_buffer = ""
+                        else:
+                            buf = None
+                            _api_input_active = True
+                            _api_input_buffer = ""
+                    if buf and self._usage is not None:
+                        self._usage.set_key(buf)
+                elif ch == "\x1b":  # ESC — cancel input, drain sequence
+                    with _api_input_lock:
+                        _api_input_active = False
+                        _api_input_buffer = ""
+                    # Drain multi-byte ESC sequence (e.g. arrow keys send \x1b[A)
+                    new[6][termios.VMIN] = 0
+                    new[6][termios.VTIME] = 1  # 100ms timeout
+                    termios.tcsetattr(fd, termios.TCSANOW, new)
+                    while True:
+                        leftover = sys.stdin.read(1)
+                        if not leftover:
+                            break
+                    new[6][termios.VMIN] = 1
+                    new[6][termios.VTIME] = 0
+                    termios.tcsetattr(fd, termios.TCSANOW, new)
+                else:
+                    with _api_input_lock:
+                        if _api_input_active:
+                            if ch in ("\x7f", "\x08"):  # backspace / DEL
+                                _api_input_buffer = _api_input_buffer[:-1]
+                            elif "\x20" <= ch <= "\x7e":  # printable ASCII
+                                _api_input_buffer += ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -272,7 +307,7 @@ class Display:
                 kb.start()
                 try:
                     while not self._quit.is_set():
-                        live.update(_build_layout(self._store), refresh=True)
+                        live.update(_build_layout(self._store, self._usage), refresh=True)
                         self._quit.wait(timeout=1.0)
                 except KeyboardInterrupt:
                     self._quit.set()
