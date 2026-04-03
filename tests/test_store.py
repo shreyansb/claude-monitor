@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from store import Bucket, DataStore, UsageEvent
+from claude_monitor.store import Bucket, DataStore, UsageEvent
 
-def _event(ts: datetime, input_tokens=100, output_tokens=50, cost_cents=0.5, directory=""):
+def _event(ts: datetime, input_tokens=100, output_tokens=50, directory=""):
     return UsageEvent(
         timestamp=ts,
         model="claude-sonnet-4-6",
@@ -9,7 +9,6 @@ def _event(ts: datetime, input_tokens=100, output_tokens=50, cost_cents=0.5, dir
         cache_creation_tokens=0,
         cache_read_tokens=0,
         output_tokens=output_tokens,
-        cost_cents=cost_cents,
         directory=directory,
     )
 
@@ -17,40 +16,38 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def test_buckets_returns_30():
+def test_buckets_returns_requested_count():
     store = DataStore()
-    buckets = store.buckets()
-    assert len(buckets) == 30
+    assert len(store.buckets(30)) == 30
+    assert len(store.buckets(60)) == 60
 
 def test_event_lands_in_correct_bucket():
     store = DataStore()
     now = _now()
-    store.add(_event(now, cost_cents=1.0))
+    store.add(_event(now, input_tokens=100))
     buckets = store.buckets()
     # Allow for bucket boundary race: event may land in bucket[-1] or[-2]
-    assert buckets[-1].cost_cents > 0 or buckets[-2].cost_cents > 0
+    assert buckets[-1].input_tokens > 0 or buckets[-2].input_tokens > 0
 
 def test_old_events_discarded():
     from datetime import timedelta
     store = DataStore()
-    old_ts = _now() - timedelta(minutes=10)
-    store.add(_event(old_ts, cost_cents=99.0))
-    # Verify old events are not stored in buckets
+    # Use a timestamp older than the full retention window (100+ minutes)
+    old_ts = _now() - timedelta(minutes=120)
+    store.add(_event(old_ts, input_tokens=9999))
+    # Verify old events are not stored in any bucket
     buckets = store.buckets()
-    total_cost = sum(b.cost_cents for b in buckets)
-    assert total_cost == 0.0
+    total_tokens = sum(b.input_tokens for b in buckets)
+    assert total_tokens == 0
 
 def test_multiple_events_same_bucket():
     store = DataStore()
     now = _now()
-    store.add(_event(now, input_tokens=100, cost_cents=1.0))
-    store.add(_event(now, input_tokens=200, cost_cents=2.0))
-    # Verify multiple events in same bucket accumulate correctly
+    store.add(_event(now, input_tokens=100))
+    store.add(_event(now, input_tokens=200))
     buckets = store.buckets()
     total_input_tokens = sum(b.input_tokens for b in buckets)
-    total_cost = sum(b.cost_cents for b in buckets)
     assert total_input_tokens == 300
-    assert abs(total_cost - 3.0) < 0.001
 
 
 # --- Per-directory tracking tests ---
@@ -89,22 +86,22 @@ def test_datastore_directories_first_seen_order():
     assert store.directories() == ["/project/c", "/project/a", "/project/b"]
 
 
-def test_datastore_lifetime_by_dir_correct_totals():
+def test_datastore_today_by_dir_correct_totals():
     store = DataStore()
     now = _now()
     store.add(_event(now, input_tokens=100, output_tokens=50, directory="/x"))
     store.add(_event(now, input_tokens=200, output_tokens=100, directory="/y"))
-    by_dir = store.lifetime_by_dir()
+    by_dir = store.today_by_dir()
     assert by_dir["/x"] == 150
     assert by_dir["/y"] == 300
 
 
-def test_datastore_lifetime_by_dir_accumulates():
+def test_datastore_today_by_dir_accumulates():
     store = DataStore()
     now = _now()
     store.add(_event(now, input_tokens=100, output_tokens=50, directory="/proj"))
     store.add(_event(now, input_tokens=200, output_tokens=75, directory="/proj"))
-    by_dir = store.lifetime_by_dir()
+    by_dir = store.today_by_dir()
     assert by_dir["/proj"] == 425  # (100+50) + (200+75)
 
 
@@ -113,17 +110,17 @@ def test_datastore_empty_directory_does_not_crash():
     now = _now()
     store.add(_event(now, input_tokens=100, output_tokens=50, directory=""))
     assert store.directories() == [""]
-    assert store.lifetime_by_dir()[""] == 150
+    assert store.today_by_dir()[""] == 150
 
 
-def test_datastore_lifetime_by_dir_returns_copy():
+def test_datastore_today_by_dir_returns_copy():
     store = DataStore()
     now = _now()
     store.add(_event(now, directory="/proj"))
-    result = store.lifetime_by_dir()
+    result = store.today_by_dir()
     result["/proj"] = 999999  # mutate the returned copy
     # Original should be unchanged
-    assert store.lifetime_by_dir()["/proj"] != 999999
+    assert store.today_by_dir()["/proj"] != 999999
 
 
 def test_datastore_directories_returns_copy():

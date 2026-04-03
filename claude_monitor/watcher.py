@@ -5,7 +5,7 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from store import DataStore, UsageEvent
+from .store import DataStore, UsageEvent
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 

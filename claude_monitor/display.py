@@ -8,7 +8,7 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
-from store import DataStore, Bucket, DayTotals, BUCKET_SECONDS, NUM_BUCKETS
+from .store import DataStore, Bucket, DayTotals, BUCKET_SECONDS, NUM_BUCKETS
 
 _chart_height = 5
 _chart_height_lock = threading.Lock()

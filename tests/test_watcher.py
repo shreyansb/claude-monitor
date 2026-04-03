@@ -3,8 +3,8 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from watcher import parse_jsonl_line, _dir_name, LogWatcher
-from store import DataStore
+from claude_monitor.watcher import parse_jsonl_line, _dir_name, LogWatcher
+from claude_monitor.store import DataStore
 
 VALID_ASSISTANT_LINE = json.dumps({
     "type": "assistant",
@@ -75,6 +75,13 @@ def test_dir_name_under_home():
     assert _dir_name(fake_path) == "puck-myapp"
 
 
+def test_dir_name_subagents_folder_maps_to_parent_project():
+    home = str(Path.home()).replace('/', '-')
+    encoded_dir = f"{home}-Code-puck-myapp"
+    fake_path = Path(f"/doesnt-matter/{encoded_dir}/191f5ce1-c026-4a65-a59e-fbee3e084748/subagents/agent.jsonl")
+    assert _dir_name(fake_path) == "puck-myapp"
+
+
 def test_dir_name_not_under_home():
     fake_path = Path("/doesnt-matter/-some-other-root-project-name/session.jsonl")
     result = _dir_name(fake_path)
@@ -102,7 +109,7 @@ def test_watcher_ignores_existing_content_on_start():
         watcher.stop()
 
         # Verify no events were loaded from pre-existing files
-        by_dir = store.lifetime_by_dir()
+        by_dir = store.today_by_dir()
         total_input_tokens = sum(b.input_tokens for b in store.buckets())
         assert total_input_tokens == 0
         assert len(by_dir) == 0
