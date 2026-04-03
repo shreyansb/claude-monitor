@@ -6,7 +6,6 @@ Reads local `~/.claude/projects/**/*.jsonl` logs and displays a real-time stacke
 
 ![Live view](screenshots/claude-monitor-main-view.png)
 ![Monthly chart](screenshots/claude-monitor-monthly-1.png)
-![Daily breakdown](screenshots/claude-monitor-monthly-2.png)
 
 ## Install
 
