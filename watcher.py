@@ -1,25 +1,73 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from pricing import calculate_cost
 from store import DataStore, UsageEvent
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
+def _try_decode_path(base: Path, remaining: str) -> Path | None:
+    """Greedily reconstruct filesystem path from hyphen-encoded remainder."""
+    current = base
+    while remaining:
+        remaining = remaining.lstrip('-')
+        if not remaining:
+            break
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: len(p.name), reverse=True)
+        except (PermissionError, OSError):
+            return current
+        found = False
+        for entry in entries:
+            name = entry.name
+            if remaining == name or remaining.startswith(name + '-'):
+                current = entry
+                remaining = remaining[len(name):]
+                found = True
+                break
+        if not found:
+            return None
+    return current
+
+
+def _git_repo_name(path: Path) -> str | None:
+    """Walk up from path to find git repo root, return its directory name."""
+    check = path
+    while True:
+        if (check / '.git').exists():
+            return check.name
+        parent = check.parent
+        if parent == check:
+            return None
+        check = parent
+
+
 def _dir_name(path: Path) -> str:
-    # Best-effort: hyphens in original directory names are indistinguishable
-    # from the path-separator encoding, so the label may truncate long names.
-    encoded = path.parent.name  # e.g. '-Users-shreyans-Code-puck-claude-monitor'
-    home_prefix = str(Path.home()).replace('/', '-')  # '-Users-shreyans'
+    # Subagents write into <encoded>/<UUID>/subagents/ — skip UUID and subagents dirs.
+    if path.parent.name == "subagents":
+        project_dir = path.parent.parent.parent
+    else:
+        project_dir = path.parent
+
+    encoded = project_dir.name  # e.g. '-Users-shreyans-Code-puck-claude-monitor'
+    home = Path.home()
+    home_prefix = str(home).replace('/', '-')  # '-Users-shreyans'
     if encoded.startswith(home_prefix):
         relative = encoded[len(home_prefix):].lstrip('-')  # 'Code-puck-claude-monitor'
     else:
         relative = encoded.lstrip('-')
+
+    # Try to resolve the actual path and use git repo name.
+    decoded = _try_decode_path(home, relative) if relative else None
+    if decoded:
+        repo_name = _git_repo_name(decoded)
+        if repo_name:
+            return repo_name
+
     parts = [p for p in relative.split('-') if p]
     if not parts:
         return encoded
@@ -51,7 +99,6 @@ def parse_jsonl_line(line: str, directory: str = "") -> UsageEvent | None:
         return None
 
     model = msg.get("model", "claude-sonnet-4-6")
-    cost = calculate_cost(model, usage)
 
     return UsageEvent(
         timestamp=ts,
@@ -60,7 +107,6 @@ def parse_jsonl_line(line: str, directory: str = "") -> UsageEvent | None:
         cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
         cache_read_tokens=usage.get("cache_read_input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
-        cost_cents=cost,
         directory=directory,
     )
 
@@ -96,9 +142,12 @@ class _Handler(FileSystemEventHandler):
                 self._store.add(usage_event)
 
 
-def preload_recent(store: DataStore, projects_dir: Path, window_seconds: int = 60) -> None:
-    """Read the last `window_seconds` of events from existing JSONL files into the store."""
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+def preload_recent(store: DataStore, projects_dir: Path) -> None:
+    """Read all historical events into the store.
+
+    Seeds the real-time ring buffer, today counter, and daily totals
+    so users can page back through 30-day windows.
+    """
     for jsonl in projects_dir.rglob("*.jsonl"):
         try:
             text = jsonl.read_text(encoding="utf-8", errors="replace")
@@ -110,8 +159,10 @@ def preload_recent(store: DataStore, projects_dir: Path, window_seconds: int = 6
             if not line:
                 continue
             event = parse_jsonl_line(line, directory)
-            if event and event.timestamp >= cutoff:
+            if event:
                 store.add(event)
+    # Freeze all past days into cache now that bulk load is done
+    store.freeze_past_days()
 
 
 class LogWatcher:

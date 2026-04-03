@@ -2,36 +2,35 @@ import os
 import sys
 import threading
 import termios
+from datetime import date, timedelta
 
 from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
-from store import DataStore, Bucket, BUCKET_SECONDS, NUM_BUCKETS
+from store import DataStore, Bucket, DayTotals, BUCKET_SECONDS, NUM_BUCKETS
 
 _chart_height = 5
 _chart_height_lock = threading.Lock()
-_api_input_active = False
-_api_input_buffer = ""
-_api_input_lock = threading.Lock()
+_view_mode = 0  # 0=live, 1=monthly total, 2=monthly breakdown
+_view_mode_lock = threading.Lock()
+_page_offset = 0  # 0 = most recent 30 days, 1 = 30-59 days ago, etc.
+_page_offset_lock = threading.Lock()
 BLOCKS = " ▁▂▃▄▅▆▇█"
+
 PALETTE = ["cyan", "yellow", "green", "magenta", "blue", "red", "bright_cyan", "bright_yellow"]
 
 
 def _fmt_val(v: int) -> str:
+    if v >= 100_000_000:
+        return f"{v // 1_000_000}M"             # "100M"–"999M"   ≤ 5 chars
+    if v >= 10_000_000:
+        return f"{v // 100_000 / 10:.1f}M"      # "10.0M"–"99.9M" = 5 chars (floor)
     if v >= 1_000_000:
-        return f"{v / 1_000_000:.2f}M"
+        return f"{v // 10_000 / 100:.2f}M"      # "1.00M"–"9.99M" = 5 chars (floor)
     if v >= 1_000:
-        return f"{v // 1_000}k"
+        return f"{v // 1_000}k"                 # "1k"–"999k"     ≤ 4 chars
     return str(v)
-
-
-def _fmt_cost(cents: float) -> str:
-    if cents < 1:
-        return "$0.00"
-    if cents < 100_000:
-        return f"${cents / 100:.2f}"
-    return f"${cents / 100_000:.2f}k"
 
 
 def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_colors: dict[str, str], height: int) -> list[Text]:
@@ -103,25 +102,161 @@ def _render_area_chart(buckets: list[Bucket], label: str, dirs: list[str], dir_c
 
         lines.append(line)
 
-    # Index height+1: x-axis line
-    one_min_buckets = 60 // BUCKET_SECONDS  # 6 buckets = 1 minute
-    one_min_pos = n - one_min_buckets       # column of the "-1m" marker
+    # Index height+1: x-axis line — place minute markers counting back from right
+    buckets_per_min = 60 // BUCKET_SECONDS  # 6 buckets = 1 minute
+    total_mins = n // buckets_per_min
+    if total_mins <= 10:
+        step = 1
+    elif total_mins <= 30:
+        step = 5
+    else:
+        step = 10
 
     axis_chars = list(" " * n)
-    for i, c in enumerate("-5m"):
-        axis_chars[i] = c
-    for i, c in enumerate("-1m"):
-        if 3 <= one_min_pos + i < n - 3:
-            axis_chars[one_min_pos + i] = c
-    for i, c in enumerate("now"):
-        axis_chars[n - len("now") + i] = c
+    for min_ago in range(step, total_mins + 1, step):
+        pos = n - min_ago * buckets_per_min
+        label = f"-{min_ago}m"
+        if 0 <= pos and pos + len(label) <= n:
+            for i, c in enumerate(label):
+                axis_chars[pos + i] = c
 
     lines.append(Text(" " * gutter + "".join(axis_chars), style="dim"))
 
     return lines
 
 
-def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], lifetime_by_dir: dict[str, int], height: int, api_month_cents: float = 0.0, api_delta_cents: float = 0.0, show_api: bool = False) -> list[Text]:
+def _date_range_label(start: date, end: date) -> str:
+    """Human-readable label for a date range."""
+    if start.year == end.year and start.month == end.month:
+        return f"{start.strftime('%b')} {start.day}–{end.day}, {end.year}"
+    if start.year == end.year:
+        return f"{start.strftime('%b')} {start.day} – {end.strftime('%b')} {end.day}, {end.year}"
+    return f"{start.strftime('%b %d, %Y')} – {end.strftime('%b %d, %Y')}"
+
+
+def _get_page_range(page_offset: int) -> tuple[date, date]:
+    """Return (start, end) dates for a 30-day page.
+
+    page_offset=0 → last 30 days ending today.
+    page_offset=1 → 30 days ending 30 days ago. Etc.
+    """
+    today = date.today()
+    end = today - timedelta(days=30 * page_offset)
+    start = end - timedelta(days=29)
+    return start, end
+
+
+def _render_monthly_chart(day_data: dict[date, DayTotals], start: date, end: date, height: int, term_width: int) -> list[Text]:
+    num_days = (end - start).days + 1
+    days = [start + timedelta(days=i) for i in range(num_days)]
+
+    gutter = 5
+    col_per_day = max(1, min(4, (term_width - gutter - 1) // num_days))
+    total_cols = num_days * col_per_day
+
+    empty = DayTotals()
+    values = [day_data.get(d, empty).total_tokens for d in days]
+    max_val = max(values, default=1) or 1
+
+    range_label = _date_range_label(start, end)
+    lines: list[Text] = []
+    lines.append(Text(f"{'Tokens / day — ' + range_label:<{gutter + total_cols}}", style="bold"))
+
+    for row in range(height - 1, -1, -1):
+        line = Text()
+        if row == height - 1:
+            line.append(f"{_fmt_val(max_val):>{gutter}}", style="dim")
+        elif row == 0:
+            line.append(f"{'0':>{gutter}}", style="dim")
+        else:
+            line.append(" " * gutter)
+
+        for day_idx in range(num_days):
+            v = values[day_idx]
+            bar_height = v / max_val * height
+            for _ in range(col_per_day):
+                if bar_height >= row + 1:
+                    line.append("█", style="cyan")
+                elif bar_height > row:
+                    frac = bar_height - row
+                    line.append(BLOCKS[max(1, int(frac * 8))], style="cyan")
+                else:
+                    line.append(" ")
+
+        lines.append(line)
+
+    # X-axis: day numbers
+    axis_chars = list(" " * total_cols)
+    label_step = 1 if col_per_day >= 2 else 5
+    for i, d in enumerate(days):
+        day_num = d.day
+        if i == 0 or day_num == 1 or (i + 1) % label_step == 0 or i == num_days - 1:
+            col_start = i * col_per_day
+            label = str(day_num)
+            for j, c in enumerate(label):
+                pos = col_start + j
+                if pos < total_cols and axis_chars[pos] == " ":
+                    axis_chars[pos] = c
+    lines.append(Text(" " * gutter + "".join(axis_chars), style="dim"))
+
+    return lines
+
+
+def _render_monthly_table(day_data: dict[date, DayTotals], start: date, end: date) -> list[Text]:
+    num_days = (end - start).days + 1
+    days = [start + timedelta(days=i) for i in range(num_days)]
+    empty = DayTotals()
+
+    range_label = _date_range_label(start, end)
+    lines: list[Text] = []
+    lines.append(Text(f"Daily breakdown — {range_label}", style="bold"))
+
+    col_w = 8
+    header = Text()
+    header.append(f"{'date':>6}", style="dim")
+    header.append(f"{'input':>{col_w}}", style="white")
+    header.append(f"{'cache_r':>{col_w}}", style="yellow")
+    header.append(f"{'cache_w':>{col_w}}", style="green")
+    header.append(f"{'output':>{col_w}}", style="magenta")
+    header.append(f"{'total':>{col_w}}", style="cyan")
+    lines.append(header)
+
+    sep_w = 6 + col_w * 5
+    lines.append(Text("─" * sep_w, style="dim"))
+
+    totals = DayTotals()
+    for d in days:
+        dt = day_data.get(d, empty)
+        if dt.total_tokens == 0:
+            continue
+        totals.input_tokens += dt.input_tokens
+        totals.cache_read_tokens += dt.cache_read_tokens
+        totals.cache_creation_tokens += dt.cache_creation_tokens
+        totals.output_tokens += dt.output_tokens
+
+        row = Text()
+        row.append(f"{d.strftime('%m/%d'):>6}", style="dim")
+        row.append(f"{_fmt_val(dt.input_tokens):>{col_w}}", style="white")
+        row.append(f"{_fmt_val(dt.cache_read_tokens):>{col_w}}", style="yellow")
+        row.append(f"{_fmt_val(dt.cache_creation_tokens):>{col_w}}", style="green")
+        row.append(f"{_fmt_val(dt.output_tokens):>{col_w}}", style="magenta")
+        row.append(f"{_fmt_val(dt.total_tokens):>{col_w}}", style="cyan")
+        lines.append(row)
+
+    lines.append(Text("─" * sep_w, style="dim"))
+    total_row = Text()
+    total_row.append(f"{'Σ':>6}", style="bold")
+    total_row.append(f"{_fmt_val(totals.input_tokens):>{col_w}}", style="white bold")
+    total_row.append(f"{_fmt_val(totals.cache_read_tokens):>{col_w}}", style="yellow bold")
+    total_row.append(f"{_fmt_val(totals.cache_creation_tokens):>{col_w}}", style="green bold")
+    total_row.append(f"{_fmt_val(totals.output_tokens):>{col_w}}", style="magenta bold")
+    total_row.append(f"{_fmt_val(totals.total_tokens):>{col_w}}", style="cyan bold")
+    lines.append(total_row)
+
+    return lines
+
+
+def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Bucket], today_by_dir: dict[str, int], height: int, window_label: str = "5m") -> list[Text]:
     content: list[Text] = []
 
     visible_dirs = dirs[:max(0, height - 1)]
@@ -130,12 +265,12 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
     # Pre-compute values
     rows: list[tuple[str, int, int]] = []
     total_5m = 0
-    total_lifetime = 0
+    total_today = 0
     for d in visible_dirs:
         t5 = sum(b.by_dir.get(d, 0) for b in buckets)
-        tl = lifetime_by_dir.get(d, 0)
+        tl = today_by_dir.get(d, 0)
         total_5m += t5
-        total_lifetime += tl
+        total_today += tl
         rows.append((d, t5, tl))
 
     # Column widths: name column = longest visible dir name (min 4)
@@ -145,9 +280,9 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
         # Header: "■ " prefix + name column + two number columns
         header = Text()
         header.append("   " + " " * name_w + " ")  # "■ " prefix + name
-        header.append(f"{'5m':>{col_w}}", style="dim")
+        header.append(f"{window_label:>{col_w}}", style="dim")
         header.append("  ")
-        header.append(f"{'session':>{col_w}}", style="dim")
+        header.append(f"{'today':>{col_w}}", style="dim")
         content.append(header)
 
         for d, t5, tl in rows:
@@ -168,50 +303,84 @@ def _build_legend(dirs: list[str], dir_colors: dict[str, str], buckets: list[Buc
     total_line.append(f"{'Total':<{2 + name_w + 1}}", style="bold")
     total_line.append(f"{_fmt_val(total_5m):>{col_w}}")
     total_line.append("  ")
-    total_line.append(f"{_fmt_val(total_lifetime):>{col_w}}")
+    total_line.append(f"{_fmt_val(total_today):>{col_w}}")
     content.append(total_line)
 
-    # Optional Anthropic API cost row
-    if show_api:
-        # Widen columns to fit '$100.00' (7 chars) in month and '+$100.00' (8 chars) in delta
-        api_col_w = max(col_w, 7)
-        delta_col_w = api_col_w + 1  # one wider to fit '+' prefix
-        # Ensure name column is wide enough for 'Anthropic' label
-        api_name_w = max(name_w, len("Anthropic"))
-        api_line = Text()
-        api_line.append(f"{'  Anthropic':<{2 + api_name_w + 1}}", style="dim")
-        api_line.append(f"{_fmt_cost(api_month_cents):>{api_col_w}}", style="dim")
-        api_line.append("  ")
-        api_line.append(f"{'+' + _fmt_cost(api_delta_cents):>{delta_col_w}}", style="dim")
-        content.append(api_line)
-
     # height + 2 total lines; pad with blank Text("") at the top
-    total_slots = height + 2 + (1 if show_api else 0)
+    total_slots = height + 2
     pad_count = total_slots - len(content)
     result: list[Text] = [Text("") for _ in range(max(0, pad_count))]
     result.extend(content)
     return result
 
 
-def _build_layout(store: DataStore, usage=None) -> Group:
-    buckets = store.buckets()
-
+def _build_layout(store: DataStore, console=None) -> Group:
     with _chart_height_lock:
         height = _chart_height
+    with _view_mode_lock:
+        view_mode = _view_mode
+    with _page_offset_lock:
+        page_offset = _page_offset
 
-    # Snapshot API cost once to keep chart/legend line counts in sync
-    api_month_cents = usage.cost_month_cents if usage is not None else 0.0
-    api_delta_cents = usage.cost_session_delta_cents if usage is not None else 0.0
-    show_api = usage is not None and usage.has_key
+    term_width = console.size.width if console is not None else 80
 
+    # ── Monthly view ──────────────────────────────────────────────────────────
+    if view_mode == 1:
+        start, end = _get_page_range(page_offset)
+        day_data = store.days_in_range(start, end)
+        chart_lines = _render_monthly_chart(day_data, start, end, height, term_width)
+
+        # Can go back if there's data older than this page's start
+        oldest = store.oldest_date()
+        can_prev = oldest is not None and oldest < start
+        can_next = page_offset > 0
+
+        status = Text()
+        status.append("[q] quit", style="dim")
+        status.append("  [+/-] height", style="dim")
+        if can_prev:
+            status.append("  [p] prev 30d", style="dim")
+        if can_next:
+            status.append("  [n] next 30d", style="dim")
+        status.append("  [m] table", style="dim")
+
+        return Group(Text("◆ Claude Monitor", style="bold cyan"), *chart_lines, status)
+
+    if view_mode == 2:
+        start, end = _get_page_range(page_offset)
+        day_data = store.days_in_range(start, end)
+        table_lines = _render_monthly_table(day_data, start, end)
+
+        oldest = store.oldest_date()
+        can_prev = oldest is not None and oldest < start
+        can_next = page_offset > 0
+
+        status = Text()
+        status.append("[q] quit", style="dim")
+        if can_prev:
+            status.append("  [p] prev 30d", style="dim")
+        if can_next:
+            status.append("  [n] next 30d", style="dim")
+        status.append("  [m] back to live", style="dim")
+
+        return Group(Text("◆ Claude Monitor", style="bold cyan"), *table_lines, status)
+
+    # ── Live view ─────────────────────────────────────────────────────────────
     dirs = store.directories()
     dir_colors = {d: PALETTE[i % len(PALETTE)] for i, d in enumerate(dirs)}
 
+    gutter = 5
+    name_w = max((len(d) for d in dirs), default=4)
+    legend_w = name_w + 18
+    n = max(6, term_width - gutter - 2 - legend_w)
+    n = min(n, NUM_BUCKETS)
+
+    buckets = store.buckets(n)
+    window_seconds = n * BUCKET_SECONDS
+    window_label = f"{window_seconds // 60}m" if window_seconds >= 60 else f"{window_seconds}s"
+
     chart_lines = _render_area_chart(buckets, "Tokens / 10s", dirs, dir_colors, height)
-    # Add a blank chart line when the legend has an extra Anthropic row
-    if show_api:
-        chart_lines.append(Text(""))
-    legend_lines = _build_legend(dirs, dir_colors, buckets, store.lifetime_by_dir(), height, api_month_cents, api_delta_cents, show_api)
+    legend_lines = _build_legend(dirs, dir_colors, buckets, store.today_by_dir(), height, window_label)
 
     merged = Text()
     for chart_line, legend_line in zip(chart_lines, legend_lines):
@@ -220,33 +389,22 @@ def _build_layout(store: DataStore, usage=None) -> Group:
         merged.append_text(legend_line)
         merged.append("\n")
 
-    with _api_input_lock:
-        input_active = _api_input_active
-        input_buf = _api_input_buffer
-
     status = Text()
     status.append("[q] quit", style="dim")
     status.append("  [+/-] chart height", style="dim")
-    if input_active:
-        status.append("  [Esc] cancel  [Enter] save", style="dim")
-        status.append("  Anthropic ▎" + "*" * len(input_buf))
-    else:
-        status.append("  [a] key", style="dim")
-        if usage is not None and usage.has_key:
-            status.append(" ✓", style="green")
+    status.append("  [m] monthly", style="dim")
 
     return Group(Text("◆ Claude Monitor", style="bold cyan"), merged, status)
 
 
 class Display:
-    def __init__(self, store: DataStore, usage=None) -> None:
+    def __init__(self, store: DataStore) -> None:
         self._store = store
-        self._usage = usage
         self._quit = threading.Event()
         self._console = Console()
 
     def _keyboard_thread(self) -> None:
-        global _chart_height, _api_input_active, _api_input_buffer
+        global _chart_height, _view_mode, _page_offset
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         new = termios.tcgetattr(fd)
@@ -260,69 +418,36 @@ class Display:
             termios.tcsetattr(fd, termios.TCSANOW, new)
             while not self._quit.is_set():
                 ch = os.read(fd, 1).decode("utf-8", errors="replace")
-
-                with _api_input_lock:
-                    in_input = _api_input_active
-
-                if in_input:
-                    # Input mode: q/Q are regular chars; only Ctrl+C force-quits
-                    if ch == "\x03":
-                        self._quit.set()
-                    elif ch in ("\r", "\n"):  # Enter — save and close
-                        with _api_input_lock:
-                            buf = _api_input_buffer
-                            _api_input_active = False
-                            _api_input_buffer = ""
-                        if buf and self._usage is not None:
-                            self._usage.set_key(buf)
-                    elif ch == "\x1b":  # ESC or bracketed paste start
-                        # Read available bytes to determine sequence type
-                        new[6][termios.VMIN] = 0
-                        new[6][termios.VTIME] = 1  # 100ms timeout
-                        termios.tcsetattr(fd, termios.TCSANOW, new)
-                        seq = b""
-                        while True:
-                            chunk = os.read(fd, 128)
-                            if not chunk:
-                                break
-                            seq += chunk
-                            if b"\x1b[201~" in seq:
-                                break
-                        new[6][termios.VMIN] = 1
-                        new[6][termios.VTIME] = 0
-                        termios.tcsetattr(fd, termios.TCSANOW, new)
-
-                        if seq.startswith(b"[200~") and b"\x1b[201~" in seq:
-                            # Bracketed paste — extract printable content
-                            raw = seq[5:seq.index(b"\x1b[201~")].decode("utf-8", errors="replace")
-                            paste = "".join(c for c in raw if "\x20" <= c <= "\x7e")
-                            with _api_input_lock:
-                                _api_input_buffer += paste
-                        else:
-                            # Plain ESC or other escape sequence — cancel input
-                            with _api_input_lock:
-                                _api_input_active = False
-                                _api_input_buffer = ""
-                    elif ch in ("\x7f", "\x08"):  # backspace / DEL
-                        with _api_input_lock:
-                            _api_input_buffer = _api_input_buffer[:-1]
-                    elif "\x20" <= ch <= "\x7e":  # printable ASCII
-                        with _api_input_lock:
-                            _api_input_buffer += ch
-                else:
-                    # Normal mode
-                    if ch in ("q", "Q", "\x03"):
-                        self._quit.set()
-                    elif ch == "+":
-                        with _chart_height_lock:
-                            _chart_height = min(_chart_height + 1, 30)
-                    elif ch == "-":
-                        with _chart_height_lock:
-                            _chart_height = max(_chart_height - 1, 1)
-                    elif ch == "a":
-                        with _api_input_lock:
-                            _api_input_active = True
-                            _api_input_buffer = ""
+                if ch in ("q", "Q", "\x03"):
+                    self._quit.set()
+                elif ch == "+":
+                    with _chart_height_lock:
+                        _chart_height = min(_chart_height + 1, 30)
+                elif ch == "-":
+                    with _chart_height_lock:
+                        _chart_height = max(_chart_height - 1, 1)
+                elif ch in ("m", "M"):
+                    with _view_mode_lock:
+                        _view_mode = (_view_mode + 1) % 3
+                    # Reset page offset when switching views
+                    with _page_offset_lock:
+                        _page_offset = 0
+                elif ch in ("p", "P"):
+                    with _view_mode_lock:
+                        in_monthly = _view_mode in (1, 2)
+                    if in_monthly:
+                        oldest = self._store.oldest_date()
+                        with _page_offset_lock:
+                            start, _ = _get_page_range(_page_offset)
+                            if oldest is not None and oldest < start:
+                                _page_offset += 1
+                elif ch in ("n", "N"):
+                    with _view_mode_lock:
+                        in_monthly = _view_mode in (1, 2)
+                    if in_monthly:
+                        with _page_offset_lock:
+                            if _page_offset > 0:
+                                _page_offset -= 1
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -338,7 +463,7 @@ class Display:
                 kb.start()
                 try:
                     while not self._quit.is_set():
-                        live.update(_build_layout(self._store, self._usage), refresh=True)
+                        live.update(_build_layout(self._store, self._console), refresh=True)
                         self._quit.wait(timeout=1.0)
                 except KeyboardInterrupt:
                     self._quit.set()
