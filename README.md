@@ -4,6 +4,10 @@ Live terminal dashboard for [Claude Code](https://docs.anthropic.com/en/docs/cla
 
 Reads local `~/.claude/projects/**/*.jsonl` logs and displays a real-time stacked bar chart of token consumption, broken down by project directory.
 
+![Live view](screenshots/claude-monitor-main-view.png)
+![Monthly chart](screenshots/claude-monitor-monthly-1.png)
+![Daily breakdown](screenshots/claude-monitor-monthly-2.png)
+
 ## Install
 
 ```
