@@ -10,13 +10,15 @@ Reads local `~/.claude/projects/**/*.jsonl` logs and displays a real-time stacke
 ## Install
 
 ```
-pip install claude-monitor
+pip install git+https://github.com/shreyansb/claude-monitor.git
 ```
 
-Or with [pipx](https://pipx.pypa.io/) for an isolated install:
+Or clone and install locally:
 
 ```
-pipx install claude-monitor
+git clone https://github.com/shreyansb/claude-monitor.git
+cd claude-monitor
+pip install .
 ```
 
 ## Usage
